@@ -34,6 +34,7 @@ type Exporter struct {
 	accessesTotal  prometheus.Counter
 	kBytesTotal    prometheus.Counter
 	uptime         prometheus.Counter
+	threads        *prometheus.GaugeVec
 	workers        *prometheus.GaugeVec
 }
 
@@ -60,6 +61,13 @@ func NewExporter(uri string) *Exporter {
 			Name:      "uptime_seconds_total",
 			Help:      "Current uptime in seconds",
 		}),
+		threads: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: namespace,
+			Name:      "threads",
+			Help:      "Apache thread statuses",
+		},
+			[]string{"state"},
+		),
 		workers: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: namespace,
 			Name:      "workers",
@@ -80,6 +88,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	e.accessesTotal.Describe(ch)
 	e.kBytesTotal.Describe(ch)
 	e.uptime.Describe(ch)
+	e.threads.Describe(ch)
 	e.workers.Describe(ch)
 }
 
@@ -97,6 +106,22 @@ func splitkv(s string) (string, string) {
 	}
 
 	return strings.TrimSpace(slice[0]), strings.TrimSpace(slice[1])
+}
+
+// Split a row of HTML table
+func splitrow(s string) (r []string) {
+	if len(s) == 0 {
+		return r
+	}
+
+	x := strings.Split(s, "<td>")
+	for _, v := range x {
+		y := strings.Split(v, "</td>")
+		if len(y) == 2 {
+			r = append(r, strings.TrimSpace(y[0]))
+		}
+	}
+	return r
 }
 
 func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
@@ -117,6 +142,26 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
 	lines := strings.Split(string(data), "\n")
 
 	for _, l := range lines {
+		if strings.Contains(l, "<td>Sum</td>") {
+			x := splitrow(l)
+			if len(x) == 8 {
+				fmt.Println(x)
+
+				val, err := strconv.ParseFloat(x[3], 64)
+				if err != nil {
+					return err
+				}
+				e.threads.WithLabelValues("busy").Set(val)
+
+				val, err = strconv.ParseFloat(x[4], 64)
+				if err != nil {
+					return err
+				}
+				e.threads.WithLabelValues("idle").Set(val)
+			}
+			continue
+		}
+
 		key, v := splitkv(l)
 
 		switch {
@@ -161,6 +206,7 @@ func (e *Exporter) collect(ch chan<- prometheus.Metric) error {
 		}
 	}
 
+	e.threads.Collect(ch)
 	e.workers.Collect(ch)
 
 	return nil
